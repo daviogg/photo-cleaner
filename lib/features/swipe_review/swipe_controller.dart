@@ -13,7 +13,6 @@ class SwipeState {
     required this.undoStack,
     required this.deleteQueueIds,
     required this.keptIds,
-    required this.replayKeeps,
   });
 
   final List<AssetEntity> assets;
@@ -23,10 +22,8 @@ class SwipeState {
   final List<SwipeRecord> undoStack;
   /// Ordered list (oldest first) of assets marked for deletion review.
   final List<String> deleteQueueIds;
-  /// Assets swiped as "keep" during the current main pass, replayed only after deck ends.
+  /// IDs of assets marked as "keep" (persisted).
   final List<String> keptIds;
-  /// Whether we are currently replaying only kept photos.
-  final bool replayKeeps;
 
   SwipeState copyWith({
     List<AssetEntity>? assets,
@@ -36,7 +33,6 @@ class SwipeState {
     List<SwipeRecord>? undoStack,
     List<String>? deleteQueueIds,
     List<String>? keptIds,
-    bool? replayKeeps,
   }) {
     return SwipeState(
       assets: assets ?? this.assets,
@@ -46,7 +42,6 @@ class SwipeState {
       undoStack: undoStack ?? this.undoStack,
       deleteQueueIds: deleteQueueIds ?? this.deleteQueueIds,
       keptIds: keptIds ?? this.keptIds,
-      replayKeeps: replayKeeps ?? this.replayKeeps,
     );
   }
 }
@@ -57,6 +52,19 @@ final swipeControllerProvider = AsyncNotifierProvider<SwipeController, SwipeStat
 
 class SwipeController extends AsyncNotifier<SwipeState> {
   static const _pageSize = 60;
+
+  static List<AssetEntity> _orderAssets({
+    required List<AssetEntity> assets,
+    required Set<String> keptSet,
+  }) {
+    if (assets.isEmpty) return assets;
+    final unreviewed = <AssetEntity>[];
+    final kept = <AssetEntity>[];
+    for (final a in assets) {
+      (keptSet.contains(a.id) ? kept : unreviewed).add(a);
+    }
+    return [...unreviewed, ...kept];
+  }
 
   @override
   Future<SwipeState> build() async {
@@ -69,17 +77,24 @@ class SwipeController extends AsyncNotifier<SwipeState> {
     final deleteQueue = await ref.read(deleteQueueServiceProvider.future);
     final queuedIds = deleteQueue.ids;
     final queuedSet = queuedIds.toSet();
+
+    final kept = await ref.read(keptServiceProvider.future);
+    final keptIds = kept.ids;
+    final keptSet = keptIds.toSet();
+
     final excludeIds = {...favoriteIds, ...queuedSet};
 
+    final candidate = first.assets.where((a) => !excludeIds.contains(a.id)).toList(growable: false);
+    final ordered = _orderAssets(assets: candidate, keptSet: keptSet);
+
     return SwipeState(
-      assets: first.assets.where((a) => !excludeIds.contains(a.id)).toList(growable: false),
+      assets: ordered,
       page: 0,
       isLastPage: first.isLastPage,
       loadingMore: false,
       undoStack: const [],
       deleteQueueIds: queuedIds,
-      keptIds: const [],
-      replayKeeps: false,
+      keptIds: keptIds,
     );
   }
 
@@ -95,18 +110,22 @@ class SwipeController extends AsyncNotifier<SwipeState> {
       final queuedIds = deleteQueue.ids;
       final excludeIds = {...favoriteIds, ...queuedIds.toSet()};
 
+      final kept = await ref.read(keptServiceProvider.future);
+      final keptIds = kept.ids;
+      final keptSet = keptIds.toSet();
+
       final photoService = ref.read(photoServiceProvider);
       final first = await photoService.fetchPage(page: 0, pageSize: _pageSize);
       final filtered = first.assets.where((a) => !excludeIds.contains(a.id)).toList(growable: false);
+      final ordered = _orderAssets(assets: filtered, keptSet: keptSet);
 
       return s.copyWith(
-        assets: filtered,
+        assets: ordered,
         page: 0,
         isLastPage: first.isLastPage,
         loadingMore: false,
         deleteQueueIds: queuedIds,
-        keptIds: const [],
-        replayKeeps: false,
+        keptIds: keptIds,
       );
     });
   }
@@ -114,7 +133,6 @@ class SwipeController extends AsyncNotifier<SwipeState> {
   Future<void> _maybeLoadMore(int currentIndex) async {
     final s = state.asData?.value;
     if (s == null) return;
-    if (s.replayKeeps) return;
     if (s.isLastPage || s.loadingMore) return;
 
     // Prefetch when near the end.
@@ -131,10 +149,28 @@ class SwipeController extends AsyncNotifier<SwipeState> {
       final excludeIds = {...favoriteIds, ...queuedIds};
       final nextPage = s.page + 1;
       final next = await photoService.fetchPage(page: nextPage, pageSize: _pageSize);
+
+      final kept = await ref.read(keptServiceProvider.future);
+      final keptSet = kept.ids.toSet();
+
+      final nextFiltered = next.assets.where((a) => !excludeIds.contains(a.id)).toList(growable: false);
+      final nextUnreviewed = <AssetEntity>[];
+      final nextKept = <AssetEntity>[];
+      for (final a in nextFiltered) {
+        (keptSet.contains(a.id) ? nextKept : nextUnreviewed).add(a);
+      }
+
+      // Keep any already-loaded kept assets always at the bottom.
+      final currentKeptSet = s.keptIds.toSet();
+      final existingUnreviewed = s.assets.where((a) => !currentKeptSet.contains(a.id)).toList(growable: false);
+      final existingKept = s.assets.where((a) => currentKeptSet.contains(a.id)).toList(growable: false);
+
       return s.copyWith(
         assets: [
-          ...s.assets,
-          ...next.assets.where((a) => !excludeIds.contains(a.id)),
+          ...existingUnreviewed,
+          ...nextUnreviewed,
+          ...existingKept,
+          ...nextKept,
         ],
         page: nextPage,
         isLastPage: next.isLastPage,
@@ -158,6 +194,8 @@ class SwipeController extends AsyncNotifier<SwipeState> {
     // Side-effects.
     switch (action) {
       case SwipeAction.keep:
+        final kept = await ref.read(keptServiceProvider.future);
+        await kept.keep(asset.id);
         break;
       case SwipeAction.delete:
         final deleteQueue = await ref.read(deleteQueueServiceProvider.future);
@@ -185,24 +223,7 @@ class SwipeController extends AsyncNotifier<SwipeState> {
   }
 
   Future<void> onDeckEnded() async {
-    final s = state.asData?.value;
-    if (s == null) return;
-
-    // Only replay keeps after finishing the main pass.
-    if (!s.replayKeeps && s.keptIds.isNotEmpty) {
-      final keptSet = s.keptIds.toSet();
-      final keptAssets = s.assets.where((a) => keptSet.contains(a.id)).toList(growable: false);
-      state = AsyncData(
-        s.copyWith(
-          assets: keptAssets,
-          page: 0,
-          isLastPage: true,
-          loadingMore: false,
-          keptIds: const [],
-          replayKeeps: true,
-        ),
-      );
-    }
+    // No-op: kept photos stay persisted and sorted at the end of the list.
   }
 
   Future<bool> undoLast() async {
@@ -213,6 +234,8 @@ class SwipeController extends AsyncNotifier<SwipeState> {
     final last = s.undoStack.last;
     switch (last.action) {
       case SwipeAction.keep:
+        final kept = await ref.read(keptServiceProvider.future);
+        await kept.unkeep(last.assetId);
         break;
       case SwipeAction.delete:
         final deleteQueue = await ref.read(deleteQueueServiceProvider.future);
@@ -227,6 +250,9 @@ class SwipeController extends AsyncNotifier<SwipeState> {
     state = AsyncData(
       s.copyWith(
         undoStack: s.undoStack.sublist(0, s.undoStack.length - 1),
+        keptIds: last.action == SwipeAction.keep
+            ? (s.keptIds.where((id) => id != last.assetId).toList(growable: false))
+            : s.keptIds,
         deleteQueueIds: last.action == SwipeAction.delete
             ? (s.deleteQueueIds.where((id) => id != last.assetId).toList(growable: false))
             : s.deleteQueueIds,
