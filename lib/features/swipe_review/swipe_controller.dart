@@ -68,9 +68,11 @@ class SwipeController extends AsyncNotifier<SwipeState> {
 
     final deleteQueue = await ref.read(deleteQueueServiceProvider.future);
     final queuedIds = deleteQueue.ids;
+    final queuedSet = queuedIds.toSet();
+    final excludeIds = {...favoriteIds, ...queuedSet};
 
     return SwipeState(
-      assets: first.assets.where((a) => !favoriteIds.contains(a.id)).toList(growable: false),
+      assets: first.assets.where((a) => !excludeIds.contains(a.id)).toList(growable: false),
       page: 0,
       isLastPage: first.isLastPage,
       loadingMore: false,
@@ -79,6 +81,34 @@ class SwipeController extends AsyncNotifier<SwipeState> {
       keptIds: const [],
       replayKeeps: false,
     );
+  }
+
+  Future<void> reload() async {
+    final s = state.asData?.value;
+    if (s == null) return;
+    if (s.loadingMore) return;
+
+    state = await AsyncValue.guard(() async {
+      final favorites = await ref.read(favoritesServiceProvider.future);
+      final favoriteIds = favorites.ids.toSet();
+      final deleteQueue = await ref.read(deleteQueueServiceProvider.future);
+      final queuedIds = deleteQueue.ids;
+      final excludeIds = {...favoriteIds, ...queuedIds.toSet()};
+
+      final photoService = ref.read(photoServiceProvider);
+      final first = await photoService.fetchPage(page: 0, pageSize: _pageSize);
+      final filtered = first.assets.where((a) => !excludeIds.contains(a.id)).toList(growable: false);
+
+      return s.copyWith(
+        assets: filtered,
+        page: 0,
+        isLastPage: first.isLastPage,
+        loadingMore: false,
+        deleteQueueIds: queuedIds,
+        keptIds: const [],
+        replayKeeps: false,
+      );
+    });
   }
 
   Future<void> _maybeLoadMore(int currentIndex) async {
@@ -96,12 +126,15 @@ class SwipeController extends AsyncNotifier<SwipeState> {
       final photoService = ref.read(photoServiceProvider);
       final favorites = await ref.read(favoritesServiceProvider.future);
       final favoriteIds = favorites.ids.toSet();
+      final deleteQueue = await ref.read(deleteQueueServiceProvider.future);
+      final queuedIds = deleteQueue.ids.toSet();
+      final excludeIds = {...favoriteIds, ...queuedIds};
       final nextPage = s.page + 1;
       final next = await photoService.fetchPage(page: nextPage, pageSize: _pageSize);
       return s.copyWith(
         assets: [
           ...s.assets,
-          ...next.assets.where((a) => !favoriteIds.contains(a.id)),
+          ...next.assets.where((a) => !excludeIds.contains(a.id)),
         ],
         page: nextPage,
         isLastPage: next.isLastPage,

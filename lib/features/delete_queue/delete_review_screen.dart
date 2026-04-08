@@ -126,7 +126,7 @@ class DeleteReviewScreen extends ConsumerWidget {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
                                   content: Text(
-                                    'Some items could not be deleted. Check photo permissions (limited/full) and try again.',
+                                    'Some items could not be deleted. To free iCloud space: Photos → Recently Deleted → Delete.',
                                   ),
                                 ),
                               );
@@ -134,7 +134,9 @@ class DeleteReviewScreen extends ConsumerWidget {
                             }
 
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Deleted successfully.')),
+                              const SnackBar(
+                                content: Text('Deleted. To free iCloud space: Photos → Recently Deleted → Delete.'),
+                              ),
                             );
                             Navigator.of(context).pop();
                           },

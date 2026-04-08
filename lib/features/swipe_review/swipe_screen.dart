@@ -20,12 +20,14 @@ class SwipeScreen extends ConsumerStatefulWidget {
 
 class _SwipeScreenState extends ConsumerState<SwipeScreen> {
   late CardSwiperController _swiperController;
+  late final _AppResumeObserver _resumeObserver;
 
   @override
   void initState() {
     super.initState();
     _swiperController = CardSwiperController();
-    WidgetsBinding.instance.addObserver(_AppResumeObserver(onResume: _onAppResumed));
+    _resumeObserver = _AppResumeObserver(onResume: _onAppResumed);
+    WidgetsBinding.instance.addObserver(_resumeObserver);
   }
 
   void _resetSwiperController() {
@@ -39,12 +41,12 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
     await ref.read(galleryPermissionControllerProvider.notifier).refresh();
     if (!mounted) return;
     setState(_resetSwiperController);
-    ref.invalidate(swipeControllerProvider);
+    await ref.read(swipeControllerProvider.notifier).reload();
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(_AppResumeObserver(onResume: _onAppResumed));
+    WidgetsBinding.instance.removeObserver(_resumeObserver);
     _swiperController.dispose();
     super.dispose();
   }
@@ -62,7 +64,7 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         setState(_resetSwiperController);
-        ref.invalidate(swipeControllerProvider);
+        ref.read(swipeControllerProvider.notifier).reload();
       });
     });
 
@@ -248,6 +250,53 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
                                         height: 1.3,
                                       ),
                                 ),
+                                const SizedBox(height: 14),
+                                permissionAsync.maybeWhen(
+                                  data: (p) => p.level == GalleryAccessLevel.limited
+                                      ? Column(
+                                          children: [
+                                            SizedBox(
+                                              width: double.infinity,
+                                              child: FilledButton.icon(
+                                                style: FilledButton.styleFrom(
+                                                  backgroundColor: Colors.white.withValues(alpha: 0.16),
+                                                  foregroundColor: Colors.white,
+                                                ),
+                                                onPressed: () async {
+                                                  await ref
+                                                      .read(galleryPermissionControllerProvider.notifier)
+                                                      .manageLimitedSelection();
+                                                  if (!mounted) return;
+                                                  await _onAppResumed();
+                                                },
+                                                icon: const Icon(Icons.add_photo_alternate_outlined),
+                                                label: const Text('Select more photos'),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 10),
+                                            SizedBox(
+                                              width: double.infinity,
+                                              child: OutlinedButton.icon(
+                                                style: OutlinedButton.styleFrom(
+                                                  foregroundColor: Colors.white,
+                                                  side: BorderSide(color: Colors.white.withValues(alpha: 0.35)),
+                                                ),
+                                                onPressed: () async {
+                                                  await ref
+                                                      .read(galleryPermissionControllerProvider.notifier)
+                                                      .openSettings();
+                                                  if (!mounted) return;
+                                                  await _onAppResumed();
+                                                },
+                                                icon: const Icon(Icons.lock_open),
+                                                label: const Text('Enable full access in Settings'),
+                                              ),
+                                            ),
+                                          ],
+                                        )
+                                      : const SizedBox.shrink(),
+                                  orElse: () => const SizedBox.shrink(),
+                                ),
                               ],
                             ),
                           ),
@@ -277,7 +326,11 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
                             ScaffoldMessenger.of(context).clearSnackBars();
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
-                                content: Text(deletedOk ? 'Deleted.' : 'Some items could not be deleted.'),
+                                content: Text(
+                                  deletedOk
+                                      ? 'Deleted. To free iCloud space: Photos → Recently Deleted → Delete.'
+                                      : 'Some items could not be deleted. iCloud space: Photos → Recently Deleted → Delete.',
+                                ),
                               ),
                             );
                           },
@@ -761,7 +814,11 @@ class _DeletingZoneSheet extends ConsumerWidget {
                           ScaffoldMessenger.of(context).clearSnackBars();
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
-                              content: Text(deletedOk ? 'Deleted.' : 'Some items could not be deleted.'),
+                              content: Text(
+                                deletedOk
+                                    ? 'Deleted. To free iCloud space: Photos → Recently Deleted → Delete.'
+                                    : 'Some items could not be deleted. iCloud space: Photos → Recently Deleted → Delete.',
+                              ),
                             ),
                           );
                         },
