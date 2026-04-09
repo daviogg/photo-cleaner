@@ -37,22 +37,6 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
     _topIndex = 0;
   }
 
-  Future<void> _reloadPreservingTop({String? assetId}) async {
-    await ref.read(swipeControllerProvider.notifier).reload();
-    if (!mounted) return;
-
-    final s = ref.read(swipeControllerProvider).asData?.value;
-    if (s == null || s.assets.isEmpty) return;
-
-    final targetIndex = assetId == null ? null : s.assets.indexWhere((a) => a.id == assetId);
-    if (targetIndex != null && targetIndex >= 0) {
-      _topIndex = targetIndex;
-      _swiperController.moveTo(targetIndex);
-    } else {
-      _swiperController.moveTo(_topIndex.clamp(0, s.assets.length - 1));
-    }
-  }
-
   Future<void> _onAppResumed() async {
     // When coming back from iOS limited picker / Settings, refresh permission state
     // and reload assets so the UI reflects newly-authorized photos automatically.
@@ -128,8 +112,13 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
             tooltip: 'Undo',
             onPressed: () async {
               final ok = await ref.read(swipeControllerProvider.notifier).undoLast();
-              if (ok) {
-                _swiperController.undo();
+              if (!ok || !mounted) return;
+              _swiperController.undo();
+              final len = ref.read(swipeControllerProvider).asData?.value.assets.length ?? 0;
+              if (len > 0) {
+                setState(() {
+                  _topIndex = (_topIndex - 1).clamp(0, len - 1);
+                });
               }
             },
             icon: const Icon(Icons.undo),
@@ -366,14 +355,6 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
                                 .read(swipeControllerProvider.notifier)
                                 .deleteQueuedFromDevice();
                             if (!context.mounted) return;
-                            // Keep current deck position: the controller already removes
-                            // deleted assets from memory; avoid a full reload/reset here.
-                        final current = ref.read(swipeControllerProvider).asData?.value;
-                        final topAssetId = (current != null && current.assets.isNotEmpty && _topIndex < current.assets.length)
-                            ? current.assets[_topIndex].id
-                            : null;
-                        await _reloadPreservingTop(assetId: topAssetId);
-                        if (!context.mounted) return;
                             ScaffoldMessenger.of(context).clearSnackBars();
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
@@ -469,11 +450,6 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
   }
 
   Future<void> _openDeletingZone(BuildContext context) async {
-    final current = ref.read(swipeControllerProvider).asData?.value;
-    final topAssetId = (current != null && current.assets.isNotEmpty && _topIndex < current.assets.length)
-        ? current.assets[_topIndex].id
-        : null;
-
     final deletedOk = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -485,8 +461,6 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
     if (!mounted) return;
     if (deletedOk == null) return;
 
-    await _reloadPreservingTop(assetId: topAssetId);
-    if (!mounted) return;
     ScaffoldMessenger.of(this.context).clearSnackBars();
     ScaffoldMessenger.of(this.context).showSnackBar(
       SnackBar(

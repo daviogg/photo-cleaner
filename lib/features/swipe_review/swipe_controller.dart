@@ -94,12 +94,14 @@ class SwipeController extends AsyncNotifier<SwipeState> {
       page += 1;
     }
 
-    // `page` is now the next page index to fetch.
+    // `page` = count of fetch calls; last fetched album page index is `page - 1`.
+    // Must match `_loadMore` (which stores last fetched index) or we re-fetch the same pages.
+    final lastFetchedPage = page > 0 ? page - 1 : 0;
     final ordered = _orderAssets(assets: collected, keptSet: keptSet);
 
     return SwipeState(
       assets: ordered,
-      page: 0,
+      page: lastFetchedPage,
       isLastPage: isLastPage,
       loadingMore: false,
       undoStack: const [],
@@ -173,6 +175,7 @@ class SwipeController extends AsyncNotifier<SwipeState> {
       var isLastPage = false;
       final added = <AssetEntity>[];
 
+      final existingIds = s.assets.map((a) => a.id).toSet();
       while (added.isEmpty && !isLastPage) {
         final res = await photoService.fetchPage(page: page, pageSize: _pageSize);
         isLastPage = res.isLastPage;
@@ -185,7 +188,8 @@ class SwipeController extends AsyncNotifier<SwipeState> {
         page += 1;
       }
 
-      final nextAssets = [...s.assets, ...added];
+      final uniqueAdded = added.where((a) => !existingIds.contains(a.id)).toList(growable: false);
+      final nextAssets = [...s.assets, ...uniqueAdded];
       return s.copyWith(
         assets: nextAssets,
         page: page - 1,
@@ -274,7 +278,6 @@ class SwipeController extends AsyncNotifier<SwipeState> {
     if (s.undoStack.isEmpty) return false;
 
     final last = s.undoStack.last;
-    final asset = await AssetEntity.fromId(last.assetId);
     switch (last.action) {
       case SwipeAction.keep:
         final kept = await ref.read(keptServiceProvider.future);
@@ -290,25 +293,10 @@ class SwipeController extends AsyncNotifier<SwipeState> {
         break;
     }
 
-    // Re-insert only if eligible for the current phase:
-    // - favorites never reappear
-    // - delete-queue never reappears
-    // - kept reappears only in kept phase
-    final favorites = await ref.read(favoritesServiceProvider.future);
-    final deleteQueue = await ref.read(deleteQueueServiceProvider.future);
-    final kept = await ref.read(keptServiceProvider.future);
-    final excludeIds = <String>{
-      ...favorites.ids,
-      ...deleteQueue.ids,
-      if (!s.showKept) ...kept.ids,
-    };
-    final canReinsert = asset != null && !excludeIds.contains(last.assetId);
-
+    // Do not mutate `assets`: the deck list stays stable; CardSwiper.undo() moves the index back.
+    // Prepending here duplicated entries because swiped items were never removed from `assets`.
     state = AsyncData(
       s.copyWith(
-        assets: !canReinsert
-            ? s.assets
-            : ([asset, ...s.assets.where((a) => a.id != last.assetId)]),
         undoStack: s.undoStack.sublist(0, s.undoStack.length - 1),
         keptIds: last.action == SwipeAction.keep
             ? (s.keptIds.where((id) => id != last.assetId).toList(growable: false))
